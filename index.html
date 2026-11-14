@@ -1,0 +1,230 @@
+<!DOCTYPE html>
+<html lang="zh-CN"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
+<title>极空 BMS 远程监控</title>
+<style>
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+:root{--bg:#0b0f16;--card:#131a24;--card2:#18202c;--line:#22303f;--txt:#e8eef6;--dim:#8698ab;--acc:#3ea6ff;--ok:#2fd18b;--warn:#ffb02e;--err:#ff5d5d}
+body{margin:0;background:var(--bg);color:var(--txt);font:14px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",sans-serif;padding:12px;max-width:1100px;margin:0 auto}
+header{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:12px}
+h1{font-size:17px;margin:0;font-weight:600;letter-spacing:.5px}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--dim);display:inline-block}
+.dot.on{background:var(--ok);box-shadow:0 0 8px var(--ok)}
+.dot.off{background:var(--err);box-shadow:0 0 8px var(--err)}
+.tag{font-size:12px;color:var(--dim);border:1px solid var(--line);border-radius:20px;padding:2px 9px;white-space:nowrap}
+.spacer{flex:1}
+.grid{display:grid;gap:10px;grid-template-columns:repeat(auto-fit,minmax(150px,1fr))}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:12px 14px}
+.card h2{font-size:12px;color:var(--dim);margin:0 0 6px;font-weight:500;letter-spacing:.6px}
+.big{font-size:27px;font-weight:600;line-height:1.15;font-variant-numeric:tabular-nums}
+.unit{font-size:13px;color:var(--dim);font-weight:400;margin-left:3px}
+.sub{font-size:12px;color:var(--dim);margin-top:4px}
+.bar{height:6px;background:#0d131b;border-radius:4px;overflow:hidden;margin-top:8px}
+.bar>i{display:block;height:100%;border-radius:4px;background:linear-gradient(90deg,#2fd18b,#3ea6ff);transition:width .4s}
+.sec{margin-top:10px}
+.cells{display:grid;grid-template-columns:repeat(auto-fill,minmax(58px,1fr));gap:6px;margin-top:4px}
+.cell{background:var(--card2);border-radius:9px;padding:6px 4px 4px;text-align:center;border:1px solid transparent}
+.cell b{display:block;font-size:12px;font-weight:600;font-variant-numeric:tabular-nums}
+.cell s{display:block;font-size:10px;color:var(--dim);text-decoration:none}
+.cell .m{height:34px;display:flex;align-items:flex-end;justify-content:center;margin-bottom:3px}
+.cell .m i{width:12px;border-radius:3px 3px 0 0;background:#2b6cb0;display:block;min-height:2px;transition:height .35s}
+.cell.hi{border-color:#2fd18b}.cell.hi .m i{background:#2fd18b}
+.cell.lo{border-color:#ff5d5d}.cell.lo .m i{background:#ff5d5d}
+.pill{display:inline-flex;align-items:center;gap:6px;background:var(--card2);border-radius:20px;padding:5px 11px;font-size:12.5px;margin:0 6px 6px 0;border:1px solid var(--line)}
+.pill i{width:7px;height:7px;border-radius:50%;background:var(--dim)}
+.pill.on i{background:var(--ok)}.pill.warn i{background:var(--warn)}.pill.err i{background:var(--err)}
+.pill em{font-style:normal;color:inherit}
+canvas{width:100%;height:92px;display:block}
+.errlist{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}
+.errlist span{background:#33161a;color:#ff8f8f;border:1px solid #5a2226;border-radius:8px;padding:4px 9px;font-size:12px}
+.mono{font-variant-numeric:tabular-nums}
+footer{margin:14px 0 4px;font-size:11px;color:#4d5c6e;text-align:center}
+@media(max-width:520px){.big{font-size:23px}.cells{grid-template-columns:repeat(auto-fill,minmax(50px,1fr))}}
+</style></head><body>
+<header>
+  <span class="dot" id="dot"></span>
+  <h1 id="dev">极空 BMS 远程监控</h1>
+  <span class="tag" id="mode">连接中…</span>
+  <span class="spacer"></span>
+  <span class="tag" id="age">--</span>
+</header>
+
+<div class="grid">
+  <div class="card"><h2>荷电状态 SOC</h2><div class="big" id="soc">--<span class="unit">%</span></div><div class="bar"><i id="socbar" style="width:0"></i></div><div class="sub" id="cap">--</div></div>
+  <div class="card"><h2>电池总压</h2><div class="big" id="pack">--<span class="unit">V</span></div><div class="sub" id="celldelta">压差 --</div></div>
+  <div class="card"><h2>电流</h2><div class="big" id="cur">--<span class="unit">A</span></div><div class="sub" id="power">-- W</div></div>
+  <div class="card"><h2>功率</h2><div class="big" id="pow">--<span class="unit">W</span></div><div class="sub" id="state">状态 --</div></div>
+</div>
+
+<div class="card sec"><h2>MOS / 状态</h2>
+  <div>
+    <span class="pill" id="pcmos"><i></i><em>充电 MOS</em></span>
+    <span class="pill" id="pdmos"><i></i><em>放电 MOS</em></span>
+    <span class="pill" id="pbal"><i></i><em>均衡</em></span>
+    <span class="pill" id="pheat"><i></i><em>加热</em></span>
+    <span class="pill" id="pble"><i></i><em>BLE</em></span>
+  </div>
+</div>
+
+<div class="card sec"><h2>单体电压 <span id="celln" style="color:#8698ab;font-weight:400"></span></h2>
+  <div class="cells" id="cells"></div>
+</div>
+
+<div class="grid sec">
+  <div class="card"><h2>温度</h2><div class="big" id="tmos">--<span class="unit">°C</span></div><div class="sub" id="temps">--</div></div>
+  <div class="card"><h2>容量</h2><div class="big" id="rem">--<span class="unit">Ah</span></div><div class="sub" id="cyc">--</div></div>
+  <div class="card"><h2>健康度 SOH</h2><div class="big" id="soh">--<span class="unit">%</span></div><div class="sub" id="balcur">均衡电流 --</div></div>
+</div>
+
+<div class="card sec"><h2>电压曲线</h2><canvas id="cv" width="800" height="184"></canvas></div>
+<div class="card sec"><h2>功率曲线</h2><canvas id="cp" width="800" height="184"></canvas></div>
+
+<div class="card sec"><h2>告警 / 保护</h2><div class="errlist" id="errs"><span style="background:#14251c;color:#2fd18b;border-color:#1e3a2b">一切正常</span></div></div>
+
+<footer>ESP32-C3 + Air780E · MQTT · <span id="up">--</span></footer>
+
+<script>
+const $=id=>document.getElementById(id);
+const HIST=240, hv=[], hp=[];
+let cellsBuilt=0, lastMsg=0, topics=[];
+
+// ---------------- 极简 MQTT over WebSocket 客户端（inline，不依赖 CDN） ----------------
+const BROKER='wss://broker.emqx.io:8084/mqtt';
+const TOPIC='jkbms/+/state';
+class MiniMqtt{
+  constructor(){ this.ws=null; this.pid=1; this.buf=new Uint8Array(0); this.onmsg=null; this.onstat=null; }
+  connect(){
+    try{ this.ws=new WebSocket(BROKER,'mqtt'); }catch(e){ this.onstat&&this.onstat('ws-fail'); setTimeout(()=>this.connect(),3000); return; }
+    this.ws.binaryType='arraybuffer';
+    this.ws.onopen=()=>{ this._send(this._connectPkt()); this._sub(); this.onstat&&this.onstat('mqtt-open');
+      this._ka=setInterval(()=>{ try{ this._send(new Uint8Array([0xC0,0])); }catch(e){} },30000); };
+    this.ws.onmessage=e=>{ this._feed(new Uint8Array(e.data)); };
+    this.ws.onclose=()=>{ clearInterval(this._ka); this.onstat&&this.onstat('closed'); setTimeout(()=>this.connect(),3000); };
+    this.ws.onerror=()=>{ try{this.ws.close();}catch(e){} };
+  }
+  _enc(s){ return new TextEncoder().encode(s); }
+  _send(u8){ if(this.ws&&this.ws.readyState===1) this.ws.send(u8); }
+  _rem(len,n){ const r=[]; do{ let b=len%128; len=Math.floor(len/128); if(len) b|=0x80; r.push(b);}while(len); return r; }
+  _connectPkt(){
+    const cid=this._enc('web-'+Math.random().toString(16).slice(2,10));
+    const rem=10+2+cid.length;
+    const p=[0x10].concat(this._rem(rem),[0,4,77,81,84,84,4,2,0,60,0,cid.length]).concat(Array.from(cid));
+    return new Uint8Array(p);
+  }
+  _sub(){
+    const t=this._enc(TOPIC); const rem=2+2+t.length+1;
+    const p=[0x82].concat(this._rem(rem),[0,1,0,t.length]).concat(Array.from(t),[0]);
+    this._send(new Uint8Array(p));
+  }
+  _feed(chunk){
+    const merged=new Uint8Array(this.buf.length+chunk.length);
+    merged.set(this.buf,0); merged.set(chunk,this.buf.length); this.buf=merged;
+    while(this.buf.length>=2){
+      let mul=1,len=0,i=1,b;
+      do{ if(i>=this.buf.length) return; b=this.buf[i++]; len+=(b&127)*mul; mul*=128; }while(b&128);
+      if(this.buf.length<i+len) return;
+      const type=this.buf[0]>>4, start=i, end=i+len;
+      if(type===3){
+        const tl=(this.buf[start]<<8)|this.buf[start+1];
+        const topic=new TextDecoder().decode(this.buf.slice(start+2,start+2+tl));
+        const payload=new TextDecoder().decode(this.buf.slice(start+2+tl,end));
+        this.onmsg&&this.onmsg(topic,payload);
+      }
+      this.buf=this.buf.slice(end);
+    }
+  }
+}
+
+// ---------------- 渲染（与本地页面同一套） ----------------
+function fmt(v,d){ return (v===null||v===undefined||isNaN(v))?"--":Number(v).toFixed(d); }
+function setOn(el,on){ el.classList.remove('on','warn','err'); el.classList.toggle('on',!!on); }
+function buildCells(n){
+  const box=$('cells'); box.innerHTML='';
+  for(let i=0;i<n;i++){
+    const d=document.createElement('div'); d.className='cell';
+    d.innerHTML='<div class="m"><i style="height:4px"></i></div><b>--</b><s>'+(i+1)+'</s>';
+    box.appendChild(d);
+  }
+  cellsBuilt=n;
+}
+function render(s){
+  lastMsg=Date.now();
+  $('dev').textContent = s.dev ? ('极空 BMS · '+s.dev) : '极空 BMS 远程监控';
+  $('dot').className='dot '+(s.ble?'on':'off');
+  $('mode').textContent = s.ble?('4G · BLE 已连接'):'4G 在线 · BLE 断开';
+  $('age').textContent = s.age<=20?'实时':('数据 '+s.age+'s 前');
+  const soc=s.soc||0;
+  $('soc').innerHTML=soc+'<span class="unit">%</span>'; $('socbar').style.width=soc+'%';
+  $('cap').textContent=fmt(s.rem,1)+' / '+fmt(s.full,1)+' Ah';
+  $('pack').innerHTML=fmt(s.pack,2)+'<span class="unit">V</span>';
+  $('cur').innerHTML=fmt(Math.abs(s.cur),2)+'<span class="unit">A</span>';
+  $('pow').innerHTML=fmt(Math.abs(s.pow),0)+'<span class="unit">W</span>';
+  $('state').textContent='状态 '+(s.cur>0.3?'充电':(s.cur<-0.3?'放电':'待机'));
+  $('power').textContent=(s.cur>=0?'+':'')+fmt(s.cur,2)+' A';
+  const pill=(id,on,label)=>{ const el=$(id); setOn(el,on); el.querySelector('em').textContent=label; };
+  pill('pcmos',s.cmos,s.cmos?'充电 MOS 开':'充电 MOS 关');
+  pill('pdmos',s.dmos,s.dmos?'放电 MOS 开':'放电 MOS 关');
+  pill('pbal',s.bala,s.bala?'均衡中':'均衡待机');
+  pill('pheat',s.heat,s.heat?'加热中':'加热关');
+  pill('pble',s.ble,s.ble?'BLE 在线':'BLE 断开');
+  const cells=s.cells||[];
+  if(cells.length!==cellsBuilt) buildCells(cells.length||16);
+  let mn=99999,mx=0,sum=0,cnt=0;
+  cells.forEach(v=>{ if(v>500&&v<6000){ if(v<mn)mn=v; if(v>mx)mx=v; sum+=v; cnt++; }});
+  const els=$('cells').children;
+  cells.forEach((v,i)=>{
+    const el=els[i]; if(!el) return; const ok=v>500&&v<6000;
+    el.querySelector('b').textContent=ok?fmt(v/1000,3):'--';
+    el.querySelector('.m i').style.height=(ok?Math.max(3,Math.min(34,(v-2600)/12)):3)+'px';
+    el.classList.toggle('hi',ok&&v===mx&&mx>0);
+    el.classList.toggle('lo',ok&&v===mn&&mx>mn+20);
+  });
+  $('celln').textContent=cnt?('（'+cnt+' 串）'):'';
+  $('celldelta').textContent=cnt?('压差 '+(mx-mn)+' mV · 平均 '+(sum/cnt/1000).toFixed(3)+' V'):'压差 --';
+  $('tmos').innerHTML=fmt(s.mos,1)+'<span class="unit">°C</span>';
+  const ts=(s.t||[]).filter(t=>t!==null&&t!==undefined&&t>-40&&t<120);
+  $('temps').textContent=ts.length?('电芯 '+ts.map(t=>t.toFixed(1)).join(' / ')+' °C'):'无温度探头';
+  $('rem').innerHTML=fmt(s.rem,1)+'<span class="unit">Ah</span>';
+  $('cyc').textContent='循环 '+(s.cyc||0)+' 次 · 满充 '+fmt(s.full,1)+' Ah';
+  $('soh').innerHTML=(s.soh||0)+'<span class="unit">%</span>';
+  $('balcur').textContent='均衡电流 '+fmt(s.bal,3)+' A';
+  const box=$('errs'), list=s.errl||[];
+  box.innerHTML = list.length ? list.map(t=>'<span>'+t+'</span>').join('')
+    : '<span style="background:#14251c;color:#2fd18b;border-color:#1e3a2b">一切正常</span>';
+  $('up').textContent='设备运行 '+(s.up||0)+' s';
+  if(s.pack>0){ hv.push(s.pack); if(hv.length>HIST) hv.shift(); }
+  if(s.ble){ hp.push(s.pow); if(hp.length>HIST) hp.shift(); }
+  chart($('cv'),hv,'#3ea6ff',0.02,false);
+  chart($('cp'),hp,'#2fd18b',5,true);
+}
+function chart(cv,data,color,step,zeroCenter){
+  const ctx=cv.getContext('2d'),W=cv.width,H=cv.height;
+  ctx.clearRect(0,0,W,H);
+  if(!data||data.length<2) return;
+  let mn=Math.min(...data),mx=Math.max(...data);
+  if(zeroCenter){ mn=Math.min(mn,0); mx=Math.max(mx,0); }
+  if(mx-mn<step*2){ const mid=(mx+mn)/2; mn=mid-step; mx=mid+step; }
+  const pad=(mx-mn)*0.15; mn-=pad; mx+=pad;
+  const x=i=>i*(W-1)/Math.max(1,data.length-1);
+  const y=v=>H-8-((v-mn)/(mx-mn))*(H-22);
+  ctx.strokeStyle='#1b2634'; ctx.lineWidth=1;
+  for(let i=0;i<=4;i++){ const yy=8+i*(H-16)/4; ctx.beginPath(); ctx.moveTo(0,yy); ctx.lineTo(W,yy); ctx.stroke(); }
+  if(zeroCenter){ ctx.strokeStyle='#2a3a4c'; ctx.beginPath(); ctx.moveTo(0,y(0)); ctx.lineTo(W,y(0)); ctx.stroke(); }
+  ctx.beginPath();
+  data.forEach((v,i)=>{ const xx=x(i),yy=y(v); if(i)ctx.lineTo(xx,yy); else ctx.moveTo(xx,yy); });
+  ctx.strokeStyle=color; ctx.lineWidth=2; ctx.lineJoin='round'; ctx.stroke();
+  ctx.lineTo(x(data.length-1),H); ctx.lineTo(x(0),H); ctx.closePath();
+  const g=ctx.createLinearGradient(0,0,0,H); g.addColorStop(0,color+'55'); g.addColorStop(1,color+'00');
+  ctx.fillStyle=g; ctx.fill();
+  ctx.fillStyle='#8698ab'; ctx.font='15px sans-serif';
+  const lab=v=>v.toFixed(Math.abs(v)<100?2:0);
+  ctx.fillText(lab(mx),6,16); ctx.fillText(lab(mn),6,H-4);
+}
+
+// ---------------- 启动 ----------------
+const mq=new MiniMqtt();
+mq.onmsg=(topic,payload)=>{ try{ render(JSON.parse(payload)); }catch(e){} };
+mq.onstat=st=>{ if(st==='closed'){ $('dot').className='dot off'; $('mode').textContent='MQTT 重连中…'; } };
+mq.connect();
+setInterval(()=>{ if(lastMsg && Date.now()-lastMsg>60000){ $('age').textContent='数据中断'; } },5000);
+</script></body></html>
