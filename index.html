@@ -54,6 +54,15 @@ h1{font-size:16px;font-weight:750;letter-spacing:-.2px;margin:0}
 .cell.min{background:var(--warnbg);border-color:var(--warnbd)}
 .cell.min .b i{background:linear-gradient(180deg,#fbbf24,#f59e0b)}
 .cell.bal{box-shadow:inset 0 0 0 2px rgba(59,130,246,.45)}
+.legend{display:flex;flex-wrap:wrap;align-items:center;gap:6px 14px;margin-top:10px;padding-top:9px;
+  border-top:1px dashed #eef2f7;font-size:11px;color:var(--dim);line-height:1.5}
+.legend span{display:inline-flex;align-items:center;gap:5px}
+.legend i{width:12px;height:12px;border-radius:4px;border:1px solid #e5e7eb;flex:0 0 auto}
+.legend .lg-ok{background:linear-gradient(180deg,#93c5fd,#3b82f6);border-color:#bfdbfe}
+.legend .lg-max{background:linear-gradient(180deg,#34d399,#10b981);border-color:#a7f3d0}
+.legend .lg-min{background:linear-gradient(180deg,#fbbf24,#f59e0b);border-color:#fde68a}
+.legend .lg-bal{background:#fff;border:2px solid rgba(59,130,246,.55)}
+.legend .lg-tip{margin-left:auto;color:var(--dim2)}
 .row{display:grid;gap:12px;margin-top:12px;grid-template-columns:repeat(auto-fit,minmax(160px,1fr))}
 .pill{display:inline-flex;align-items:center;gap:6px;font-size:12px;padding:3px 9px;border-radius:99px;
   background:#f3f4f6;color:#4b5563;margin:3px 4px 0 0}
@@ -105,6 +114,13 @@ footer{margin:16px 0 4px;font-size:11px;color:#9aa3b2;text-align:center}
     <span class="badge" id="deltaBadge">压差 --</span>
   </div>
   <div class="cells" id="cells"></div>
+  <div class="legend">
+    <span><i class="lg-ok"></i>正常单体（柱越高电压越高）</span>
+    <span><i class="lg-max"></i>最高单体 · 绿底</span>
+    <span><i class="lg-min"></i>最低单体 · 橙底</span>
+    <span><i class="lg-bal"></i>正在均衡 · 蓝框</span>
+    <span class="lg-tip">压差：≤10mV 优秀 · ≤30mV 正常 · ≤50mV 偏大 · &gt;50mV 需检查</span>
+  </div>
 </div>
 
 <div class="row">
@@ -144,16 +160,31 @@ footer{margin:16px 0 4px;font-size:11px;color:#9aa3b2;text-align:center}
   <div id="errs" class="meta" style="margin-top:4px">无保护动作</div>
 </div>
 
-<footer>ESP32-C3 + Air780E · MQTT · 每 <span id="ivFoot">2</span> 秒上报</footer>
+<footer>ESP32-C3 + 4G 模块 · MQTT · 每 <span id="ivFoot">1</span> 秒上报</footer>
 
 <script>
 const $=id=>document.getElementById(id);
 const HIST=120, hv=[], hp=[];
 let cellsBuilt=0, lastMsg=0, rtBase=0, rtStamp=0;
 
-// ---------- 极简 MQTT over WebSocket ----------
-const BROKER='wss://broker.emqx.io:8084/mqtt';
-const TOPIC='jkbms/+/state';
+// ===== 接入配置：换 broker 只改这里 =====
+// 'hivemq' = 海外公共 broker（匿名，~300ms）；'bemfa' = 巴法云（国内 ~30ms，需私钥）
+const PROFILE='bemfa';
+const BEMFA_TOPIC='bms004';        // 与固件 board_config.h 的 BEMFA_TOPIC 一致
+// 私钥同时当 clientId（巴法云允许多连接，设备和网页不会互踢）
+const BEMFA_UID='4bc23e9e438be212249e8a4d9ae13af1';
+const BEMFA_APPID='';              // 可选：连接密钥页面的 appID
+const BEMFA_SECRET='';             // 可选：同上 secretKey
+const CFG={
+  hivemq:{broker:'wss://broker.hivemq.com:8884/mqtt', user:'', pass:'', cid:'',
+          topics:['jkbms/+/state','jkbms/+/cells','jkbms/+/info']},
+  bemfa :{broker:'wss://mqtt.bemfa.com:9504/wss', user:BEMFA_APPID, pass:BEMFA_SECRET, cid:BEMFA_UID,
+          topics:[BEMFA_TOPIC]}
+};
+const BROKER=CFG[PROFILE].broker, MQTT_USER=CFG[PROFILE].user, MQTT_PASS=CFG[PROFILE].pass;
+const MQTT_CID=CFG[PROFILE].cid;
+// 只订阅自己的主题（公共 broker 上别人也在用同名前缀，不能用 #）
+const TOPICS=CFG[PROFILE].topics;
 class MiniMqtt{
   constructor(){ this.ws=null; this.buf=new Uint8Array(0); this.onmsg=null; this.onstat=null; }
   connect(){
@@ -170,13 +201,21 @@ class MiniMqtt{
   _send(u8){ if(this.ws&&this.ws.readyState===1) this.ws.send(u8); }
   _rem(len){ const r=[]; do{ let b=len%128; len=Math.floor(len/128); if(len) b|=0x80; r.push(b);}while(len); return r; }
   _conn(){
-    const cid=this._enc('web-'+Math.random().toString(16).slice(2,10));
-    const rem=10+2+cid.length;
-    return new Uint8Array([0x10].concat(this._rem(rem),[0,4,77,81,84,84,4,2,0,60,0,cid.length],Array.from(cid)));
+    const cid=this._enc(MQTT_CID || ('web-'+Math.random().toString(16).slice(2,10)));
+    let flags=0x02, parts=[0,cid.length].concat(Array.from(cid));
+    if(MQTT_USER){ const u=this._enc(MQTT_USER); flags|=0x80; parts.push(0,u.length,...u); }
+    if(MQTT_PASS){ const p=this._enc(MQTT_PASS); flags|=0x40; parts.push(0,p.length,...p); }
+    const rem=10+parts.length;
+    return new Uint8Array([0x10].concat(this._rem(rem),[0,4,77,81,84,84,4,flags,0,60]).concat(parts));
   }
   _sub(){
-    const t=this._enc(TOPIC), rem=2+2+t.length+1;
-    this._send(new Uint8Array([0x82].concat(this._rem(rem),[0,1,0,t.length],Array.from(t),[0])));
+    let rem=2; const parts=[];
+    for(const f of TOPICS){
+      const t=this._enc(f);
+      rem += 2 + t.length + 1;
+      parts.push(0, t.length, ...Array.from(t), 0);
+    }
+    this._send(new Uint8Array([0x82].concat(this._rem(rem),[0,1]).concat(parts)));
   }
   _feed(chunk){
     const m=new Uint8Array(this.buf.length+chunk.length);
@@ -234,7 +273,7 @@ function render(s){
   const csq=s.csq||0;
   $('tSig').className='tag '+(csq>0?'ok':'');
   $('tSig').textContent = csq>0 ? ('4G 信号 '+csq) : '4G --';
-  $('tAge').textContent = s.age<=6 ? '实时' : ('数据 '+s.age+'s 前');
+  $('tAge').textContent = (s.age===undefined||s.age===null) ? '--' : (s.age<=6 ? '实时' : ('数据 '+s.age+'s 前'));
 
   const soc=s.soc||0;
   $('soc').innerHTML=soc+'<span>%</span>';
@@ -279,8 +318,9 @@ function render(s){
     const ok=v>500&&v<6000;
     el.querySelector('b').textContent=ok?fmt(v/1000,3):'--';
     el.querySelector('.b i').style.height=(ok?Math.max(4,Math.min(38,(v-2600)/12)):4)+'px';
-    el.classList.toggle('max', ok && v===s.mxv);
-    el.classList.toggle('min', ok && v===s.mnv);
+    // 只高亮板子报的那一串：20 串里常有十几串电压完全相同，按值比较会全部标绿
+    el.classList.toggle('max', ok && s.mxi>0 && (i+1)===s.mxi);
+    el.classList.toggle('min', ok && s.mni>0 && (i+1)===s.mni);
     el.classList.toggle('bal', balSet.has(i+1));
     el.querySelector('s').textContent=(i+1)+ (balSet.has(i+1)?' 均衡':'');
   });
@@ -303,7 +343,11 @@ function render(s){
 
   setPill($('pBle'),'BLE '+(s.brssi||0)+' dBm', online?'ok':'warn');
   setPill($('pSig'),'4G 信号 '+csq, csq>=15?'ok':(csq>0?'warn':'warn'));
-  setPill($('pIv'),'上报 '+(s.iv?s.iv/1000:2)+' 秒','');
+  const ivSec = s.iv ? Math.round(s.iv/1000) : 0;
+  const quiet = (s.qo === 1);
+  setPill($('pIv'), '上报 '+(ivSec||'--')+' 秒'+(quiet?' · 省流':''), quiet?'warn':'');
+  if(s.iv) $('ivFoot').textContent = ivSec;
+  if($('pIv')) $('pIv').title = s.nm ? ('正常 '+Math.round(s.nm/1000)+' 秒 / 省流 '+Math.round(s.qm/1000)+' 秒') : '';
   setPill($('pAge'),'包序号 '+(s.pk||0),'');
   setPill($('pFr'),'帧 '+(s.fr||0),'');
   setPill($('pCrc'),'CRC 错 '+(s.cc||0), (s.cc>0)?'warn':'');
@@ -319,24 +363,33 @@ function render(s){
 
   if(s.pack>0){ hv.push(s.pack); if(hv.length>HIST) hv.shift(); }
   if(s.ble){ hp.push(s.cur||0); if(hp.length>HIST) hp.shift(); }
-  chart($('cv'),hv,'#3b82f6',0.02,false,false);
-  chart($('cp'),hp,'#10b981',0.5,true,true);
-  $('cvRange').textContent = hv.length? (fmt(Math.max(...hv),2)+' / '+fmt(Math.min(...hv),2)+' V') : '--';
+  chart($('cv'),hv,'#3b82f6',0.1,false,false,1.0);
+  chart($('cp'),hp,'#10b981',0.5,true,true,2.0);
+  $('cvRange').textContent = hv.length? (fmt(Math.max(...hv),2)+' / '+fmt(Math.min(...hv),2)+' V · Δ'+Math.round((Math.max(...hv)-Math.min(...hv))*1000)+' mV') : '--';
   $('cpRange').textContent = hp.length? (fmt(Math.max(...hp),2)+' / '+fmt(Math.min(...hp),2)+' A') : '--';
 }
 
-function chart(cv,data,color,step,zeroCenter,isCurrent){
+function chart(cv,data,color,step,zeroCenter,isCurrent,minSpanV){
   const ctx=cv.getContext('2d'),W=cv.width,H=cv.height;
   ctx.clearRect(0,0,W,H);
   if(!data||data.length<2) return;
   let mn=Math.min(...data),mx=Math.max(...data);
   if(zeroCenter){ mn=Math.min(mn,0); mx=Math.max(mx,0); }
-  if(mx-mn<step*2){ const mid=(mx+mn)/2; mn=mid-step; mx=mid+step; }
-  const pad=(mx-mn)*0.18; mn-=pad; mx+=pad;
+  // 纵轴按 step 对齐刻度，并强制一个最小跨度（电压 1V / 电流 2A）：
+  // 这样 0.01V 的采样抖动只占 1/100 高度，不会被放大成"大波浪"
+  const minSpan=minSpanV||step*4;
+  let lo=Math.floor(mn/step)*step, hi=Math.ceil(mx/step)*step;
+  if(hi-lo<minSpan){ const mid=(lo+hi)/2; lo=Math.floor((mid-minSpan/2)/step)*step; hi=lo+minSpan; }
+  // 迟滞：数据仍在上次坐标范围内就不重算，避免每帧纵轴跳动
+  const prev=AXIS.get(cv);
+  if(prev && mn>=prev.lo && mx<=prev.hi && (prev.hi-prev.lo)<=(hi-lo)*2.5){ lo=prev.lo; hi=prev.hi; }
+  AXIS.set(cv,{lo:lo,hi:hi});
   const x=i=>i*(W-1)/Math.max(1,data.length-1);
-  const y=v=>H-10-((v-mn)/(mx-mn))*(H-24);
+  const y=v=>H-9-((v-lo)/(hi-lo))*(H-20);
+  // 网格按 step 画，读数有参照
   ctx.strokeStyle='#eef1f6'; ctx.lineWidth=1;
-  for(let i=0;i<=3;i++){ const yy=10+i*(H-20)/3; ctx.beginPath(); ctx.moveTo(0,yy); ctx.lineTo(W,yy); ctx.stroke(); }
+  const n=Math.round((hi-lo)/step);
+  for(let i=0;i<=n;i++){ const yy=y(lo+i*step); ctx.beginPath(); ctx.moveTo(0,yy); ctx.lineTo(W,yy); ctx.stroke(); }
   if(zeroCenter){ ctx.strokeStyle='#e2e8f0'; ctx.beginPath(); ctx.moveTo(0,y(0)); ctx.lineTo(W,y(0)); ctx.stroke(); }
   ctx.beginPath();
   data.forEach((v,i)=>{ const xx=x(i),yy=y(v); if(i)ctx.lineTo(xx,yy); else ctx.moveTo(xx,yy); });
@@ -345,13 +398,49 @@ function chart(cv,data,color,step,zeroCenter,isCurrent){
   const g=ctx.createLinearGradient(0,0,0,H); g.addColorStop(0,color+'33'); g.addColorStop(1,color+'00');
   ctx.fillStyle=g; ctx.fill();
   ctx.fillStyle='#9aa3b2'; ctx.font='13px sans-serif';
-  const lab=v=>v.toFixed(Math.abs(v)<10?2:1);
-  ctx.fillText(lab(mx),6,15); ctx.fillText(lab(mn),6,H-3);
+  ctx.fillText(hi.toFixed(2),6,14); ctx.fillText(lo.toFixed(2),6,H-2);
 }
+const AXIS=new Map();
 
 const mq=new MiniMqtt();
-mq.onmsg=p=>{ try{ render(JSON.parse(p)); }catch(e){} };
+
+// ---- ML307A 拆包（state / cells / info）合并成一整份状态 ----
+const S={cells:[],t:[]};
+function applyMsg(o){
+  // 整包（Air780E 或 ML307A 单包模式）：字段已经是长名字，直接渲染
+  if(o.cells && 'soc' in o){
+    if(o.dev!==undefined) S.dev=o.dev;
+    if(o.iv!==undefined){ S.iv=o.iv; S.pk=o.pk; S.fr=o.fr; S.cc=o.cc; }
+    o.ble = o.ble===undefined ? true : o.ble;
+    render(o);
+    return;
+  }
+  if(o.c){ S.cells=o.c; S.n=o.c.length; }
+  if('soc' in o){
+    S.soc=o.soc; S.pack=o.pack; S.cur=o.cur; S.pow=o.pow; S.mos=o.mos;
+    S.t=o.t||S.t; S.st=o.st; S.rt=o.rt;
+    S.cmos=o.cm; S.dmos=o.dm; S.bala=o.bl;
+    S.mxv=o.mx; S.mxi=o.mxI; S.mnv=o.mn; S.mni=o.mnI; S.prot=o.pr;
+  }
+  if('dev' in o){
+    S.dev=o.dev; S.rem=o.rem; S.full=o.full; S.cyc=o.cyc; S.soh=o.soh;
+    S.brssi=o.br; S.csq=o.q; S.iv=o.iv; S.pk=o.pk; S.fr=o.fr; S.cc=o.cc;
+  }
+  const stMap=['未知','闲置','充电','放电','待机','错误'];
+  S.bs = (S.st!==undefined && stMap[S.st]) ? stMap[S.st] : '--';
+  S.cm = S.cmos? '开启':'关闭';
+  S.dm = S.dmos? '开启':'关闭';
+  S.bm = S.bala? '自动均衡':'关闭';
+  S.balc = [];
+  S.errl = S.prot? ['保护动作 0x'+Number(S.prot).toString(16).toUpperCase()] : [];
+  S.ble = true;
+  S.age = 0;
+  render(S);
+}
+
+mq.onmsg=p=>{ try{ applyMsg(JSON.parse(p)); }catch(e){} };
 mq.onstat=ok=>{ if(!ok){ $('dot').className='dot off'; $('tLink').textContent='MQTT 重连中…'; } };
 render({}); mq.connect();
 setInterval(()=>{ if(lastMsg && Date.now()-lastMsg>30000){ $('tAge').textContent='数据中断'; $('dot').className='dot off'; } },4000);
 </script></body></html>
+
